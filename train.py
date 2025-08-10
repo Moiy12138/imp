@@ -29,7 +29,7 @@ import archs
 import losses
 from dataset import Dataset
 
-from metrics import iou_score, indicators
+from metrics import iou_score, indicators, dice_coef
 
 from utils import AverageMeter, str2bool
 
@@ -256,7 +256,8 @@ def parse_args():
 def train(config, train_loader, model, criterion, optimizer):
     avg_meters = {
         'loss' : AverageMeter(),
-        'iou' : AverageMeter()
+        'iou' : AverageMeter(),
+        'dice_coef' : AverageMeter(),
     }
 
     model.train()
@@ -275,12 +276,14 @@ def train(config, train_loader, model, criterion, optimizer):
             loss /= len(outputs)
 
             iou, dice, _ = iou_score(outputs[-1], target)
+            dice_coef = dice_coef(outputs[-1], target)
             iou_, dice_, hd_, hd95_, recall_, specificity_, precision_ = indicators(outputs[-1], target)
             
         else:
             output = model(input)
             loss = criterion(output, target)
             iou, dice, _ = iou_score(output, target)
+            dice_coef = dice_coef(output, target)
             iou_, dice_, hd_, hd95_, recall_, specificity_, precision_ = indicators(output, target)
 
         # compute gradient and do optimizing step
@@ -290,11 +293,13 @@ def train(config, train_loader, model, criterion, optimizer):
 
         avg_meters['loss'].update(loss.item(), input.size(0))
         avg_meters['iou'].update(iou, input.size(0))
+        avg_meters['dice_coef'].update(dice_coef, input.size(0))
 
         postfix = OrderedDict(
             [
                 ('loss', avg_meters['loss'].avg),
                 ('iou', avg_meters['iou'].avg),
+                ('dice_coef', avg_meters['dice_coef'].avg),
             ]
         )
         pbar.set_postfix(postfix)
@@ -305,6 +310,7 @@ def train(config, train_loader, model, criterion, optimizer):
         [
             ('loss', avg_meters['loss'].avg),
             ('iou', avg_meters['iou'].avg)
+            ('dice_coef', avg_meters['dice_coef'].avg),
         ]
     )
 
@@ -332,20 +338,24 @@ def validate(config, val_loader, model, criterion):
                     loss += criterion(output, target)
                 loss /= len(outputs)
                 iou, dice, _ = iou_score(outputs[-1], target)
+                dice_coef = dice_coef(output, target)
             else:
                 output = model(input)
                 loss = criterion(output, target)
                 iou, dice, _ = iou_score(output, target)
+                dice_coef = dice_coef(output, target)
 
             avg_meters['loss'].update(loss.item(), input.size(0))
             avg_meters['iou'].update(iou, input.size(0))
             avg_meters['dice'].update(dice, input.size(0))
+            avg_meters['dice_coef'].update(dice_coef, input.size(0))
 
             postfix = OrderedDict(
             [
                 ('loss', avg_meters['loss'].avg),
                 ('iou', avg_meters['iou'].avg),
                 ('dice', avg_meters['dice'].avg),
+                ('dice_coef', avg_meters['dice_coef'].avg),
             ]
         )
             pbar.set_postfix(postfix)
@@ -357,6 +367,7 @@ def validate(config, val_loader, model, criterion):
                 ('loss', avg_meters['loss'].avg),
                 ('iou', avg_meters['iou'].avg),
                 ('dice', avg_meters['dice'].avg),
+                ('dice_coef', avg_meters['dice_coef'].avg),
             ]
         )
 
@@ -586,8 +597,8 @@ def main():
             scheduler.step(val_log['loss'])
 
         print(
-            'loss %.4f - iou %.4f - val_loss %.4f - val_iou %.4f'
-            % (train_log['loss'], train_log['iou'], val_log['loss'], val_log['iou'])
+            'train_loss %.4f - train_iou %.4f - train_dice_coef %.4f - val_loss %.4f - val_iou %.4f - val_dice_coef %.4f'
+            % (train_log['loss'], train_log['iou'], train['dice_coef'], val_log['loss'], val_log['iou'], val_log['dice_coef'])
         )
 
         log['epoch'].append(epoch)

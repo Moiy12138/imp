@@ -40,6 +40,7 @@ class KANLayer(nn.Module):
         scale_noise = 0.1
         scale_base = 1.0
         scale_spline=1.0
+        # TODO act SiLU(prefer) or GELU
         base_activation = torch.nn.SiLU
         grid_eps = 0.02
         grid_range = [-1, 1]
@@ -304,8 +305,8 @@ class UKAN(nn.Module):
             in_chans=3,
             embed_dims=[256, 320, 512],
             no_kan=False,
-            drop_rate=0.,
-            drop_patch_rate=0.,
+            drop_rate=0.1,
+            drop_patch_rate=0.1,
             norm_layer=nn.LayerNorm,
             depths=[1, 1, 1], **kwargs,
         ):
