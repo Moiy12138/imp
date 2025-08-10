@@ -1,0 +1,1 @@
+pretrained/STPretrain.pth filter=lfs diff=lfs merge=lfs -text
