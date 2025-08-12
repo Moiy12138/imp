@@ -171,7 +171,7 @@ def parse_args():
     )
     parser.add_argument(
         '--weight_decay',
-        default=1e-4,
+        default=1e-3,
         type=float,
         help='weight decay'
     )
@@ -257,7 +257,7 @@ def train(config, train_loader, model, criterion, optimizer):
     avg_meters = {
         'loss' : AverageMeter(),
         'iou' : AverageMeter(),
-        'dice_coef' : AverageMeter(),
+        'dice_coef_val' : AverageMeter(),
     }
 
     model.train()
@@ -276,14 +276,14 @@ def train(config, train_loader, model, criterion, optimizer):
             loss /= len(outputs)
 
             iou, dice, _ = iou_score(outputs[-1], target)
-            dice_coef = dice_coef(outputs[-1], target)
+            dice_coef_val = dice_coef(outputs[-1], target)
             iou_, dice_, hd_, hd95_, recall_, specificity_, precision_ = indicators(outputs[-1], target)
             
         else:
             output = model(input)
             loss = criterion(output, target)
             iou, dice, _ = iou_score(output, target)
-            dice_coef = dice_coef(output, target)
+            dice_coef_val = dice_coef(output, target)
             iou_, dice_, hd_, hd95_, recall_, specificity_, precision_ = indicators(output, target)
 
         # compute gradient and do optimizing step
@@ -293,13 +293,13 @@ def train(config, train_loader, model, criterion, optimizer):
 
         avg_meters['loss'].update(loss.item(), input.size(0))
         avg_meters['iou'].update(iou, input.size(0))
-        avg_meters['dice_coef'].update(dice_coef, input.size(0))
+        avg_meters['dice_coef_val'].update(dice_coef_val, input.size(0))
 
         postfix = OrderedDict(
             [
                 ('loss', avg_meters['loss'].avg),
                 ('iou', avg_meters['iou'].avg),
-                ('dice_coef', avg_meters['dice_coef'].avg),
+                ('dice_coef_val', avg_meters['dice_coef_val'].avg),
             ]
         )
         pbar.set_postfix(postfix)
@@ -309,8 +309,8 @@ def train(config, train_loader, model, criterion, optimizer):
     return OrderedDict(
         [
             ('loss', avg_meters['loss'].avg),
-            ('iou', avg_meters['iou'].avg)
-            ('dice_coef', avg_meters['dice_coef'].avg),
+            ('iou', avg_meters['iou'].avg),
+            ('dice_coef_val', avg_meters['dice_coef_val'].avg),
         ]
     )
 
@@ -320,6 +320,7 @@ def validate(config, val_loader, model, criterion):
         'loss':AverageMeter(),
         'iou':AverageMeter(),
         'dice':AverageMeter(),
+        'dice_coef_val':AverageMeter(),
     }
 
     model.eval()
@@ -338,24 +339,24 @@ def validate(config, val_loader, model, criterion):
                     loss += criterion(output, target)
                 loss /= len(outputs)
                 iou, dice, _ = iou_score(outputs[-1], target)
-                dice_coef = dice_coef(output, target)
+                dice_coef_val = dice_coef(output, target)
             else:
                 output = model(input)
                 loss = criterion(output, target)
                 iou, dice, _ = iou_score(output, target)
-                dice_coef = dice_coef(output, target)
+                dice_coef_val = dice_coef(output, target)
 
             avg_meters['loss'].update(loss.item(), input.size(0))
             avg_meters['iou'].update(iou, input.size(0))
             avg_meters['dice'].update(dice, input.size(0))
-            avg_meters['dice_coef'].update(dice_coef, input.size(0))
+            avg_meters['dice_coef_val'].update(dice_coef_val, input.size(0))
 
             postfix = OrderedDict(
             [
                 ('loss', avg_meters['loss'].avg),
                 ('iou', avg_meters['iou'].avg),
                 ('dice', avg_meters['dice'].avg),
-                ('dice_coef', avg_meters['dice_coef'].avg),
+                ('dice_coef_val', avg_meters['dice_coef_val'].avg),
             ]
         )
             pbar.set_postfix(postfix)
@@ -367,7 +368,7 @@ def validate(config, val_loader, model, criterion):
                 ('loss', avg_meters['loss'].avg),
                 ('iou', avg_meters['iou'].avg),
                 ('dice', avg_meters['dice'].avg),
-                ('dice_coef', avg_meters['dice_coef'].avg),
+                ('dice_coef_val', avg_meters['dice_coef_val'].avg),
             ]
         )
 
@@ -571,8 +572,8 @@ def main():
     log = OrderedDict([
         ('epoch', []),
         ('lr', []),
-        ('loss', []),
-        ('iou', []),
+        ('train_loss', []),
+        ('train_iou', []),
         ('val_loss', []),
         ('val_iou', []),
         ('val_dice', []),
@@ -597,20 +598,21 @@ def main():
             scheduler.step(val_log['loss'])
 
         print(
-            'train_loss %.4f - train_iou %.4f - train_dice_coef %.4f - val_loss %.4f - val_iou %.4f - val_dice_coef %.4f'
-            % (train_log['loss'], train_log['iou'], train['dice_coef'], val_log['loss'], val_log['iou'], val_log['dice_coef'])
+            'train_loss %.4f - train_iou %.4f - train_dice_coef_val %.4f - val_loss %.4f - val_iou %.4f - val_dice_coef_val %.4f'
+            % (train_log['loss'], train_log['iou'], train_log['dice_coef_val'], val_log['loss'], val_log['iou'], val_log['dice_coef_val'])
         )
 
         log['epoch'].append(epoch)
         log['lr'].append(config['lr'])
-        log['loss'].append(train_log['loss'])
-        log['iou'].append(train_log['iou'])
+        log['train_loss'].append(train_log['loss'])
+        log['train_iou'].append(train_log['iou'])
         log['val_loss'].append(val_log['loss'])
         log['val_iou'].append(val_log['iou'])
         log['val_dice'].append(val_log['dice'])
 
         pd.DataFrame(log).to_csv(f'{output_dir}/{exp_name}/log.csv', index=False)
 
+        # use tensorBoard for review
         my_writer.add_scalar('train/loss', train_log['loss'], global_step=epoch)
         my_writer.add_scalar('train/iou', train_log['iou'], global_step=epoch)
         my_writer.add_scalar('val/loss', val_log['loss'], global_step=epoch)
@@ -635,6 +637,10 @@ def main():
                 break
 
             torch.cuda.empty_cache()
+    else:
+        # close computer when for loop done
+        os.system("shutdown /s /t 3")
+        # pass
 
 if __name__ == '__main__':
     main()

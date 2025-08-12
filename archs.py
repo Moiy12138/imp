@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from utils import *
 
 import timm
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from timm.layers import DropPath, to_2tuple, trunc_normal_
 import types
 import math
 from abc import ABCMeta, abstractmethod
@@ -305,7 +305,7 @@ class UKAN(nn.Module):
             in_chans=3,
             embed_dims=[256, 320, 512],
             no_kan=False,
-            drop_rate=0.1,
+            drop_rate=0.2,
             drop_patch_rate=0.1,
             norm_layer=nn.LayerNorm,
             depths=[1, 1, 1], **kwargs,
