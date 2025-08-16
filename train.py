@@ -7,22 +7,16 @@ import numpy as np
 
 import pandas as pd
 import torch
-import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.optim as optim
 import yaml
 
 import albumentations as albu
 
-# from albumentations.augmentations import transforms
-
-# from albumentations.augmentations import geometric
-
 from albumentations.core.composition import Compose, OneOf
 from sklearn.model_selection import train_test_split
 from torch.optim import lr_scheduler
 from tqdm import tqdm
-# from albumentations import RandomRotate90, Resize
 
 import archs
 
@@ -37,7 +31,6 @@ from tensorboardX import SummaryWriter
 
 import shutil
 import os
-import subprocess
 
 from pdb import set_trace as st
 
@@ -71,11 +64,11 @@ def parse_args():
         default=8,
         type=int,
         metavar='N',
-        help='mini-batch size (default:16)'
+        help='mini-batch size (default:8)'
     )
     parser.add_argument(
         '--dataseed',
-        default=2981,
+        default=312,
         type=int,
         help=''
     )
@@ -94,7 +87,7 @@ def parse_args():
         type=str2bool
     )
     parser.add_argument(
-        '--input_channels',
+        '--in_chans',
         default=3,
         type=int,
         help='input channels'
@@ -107,20 +100,20 @@ def parse_args():
     )
     parser.add_argument(
         '--input_w',
-        default=256,
+        default=224,
         type=int,
         help='image width'
     )
     parser.add_argument(
         '--input_h',
-        default=256,
+        default=224,
         type=int,
         help='image height'
     )
     parser.add_argument(
         '--input_list',
         type=list_type,
-        default=[256, 320, 512]
+        default=[192, 384, 768],
     )
 
     # loss
@@ -139,12 +132,12 @@ def parse_args():
     )
     parser.add_argument(
         '--data_dir',
-        default='inputs',
+        default='../inputs',
         help='dataset dir'
     )
     parser.add_argument(
         '--output_dir',
-        default='outputs',
+        default='../outputs',
         help='output dir'
     )
     
@@ -158,7 +151,7 @@ def parse_args():
     parser.add_argument(
         '--lr',
         '--learning_rate',
-        default=1e-4,
+        default=0.01,
         type=float,
         metavar='LR',
         help='initial learning rate'
@@ -372,6 +365,44 @@ def validate(config, val_loader, model, criterion):
             ]
         )
 
+
+def load_swin_transformer_weights(model: torch.nn.Module, checkpoint_path: str):
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        pretrained_state_dict = checkpoint.get('model', checkpoint)
+    except Exception as e:
+        print(f"wrong:load '{checkpoint_path}' fail: {e}")
+        return model
+
+    model_state_dict = model.state_dict()
+    new_pretrained_state_dict = OrderedDict()
+
+    key_mapping = [
+        ('patch_embed.', 'patch_embed.'),
+        ('layers.0.blocks.0.', 'enc0_block0.'),
+        ('layers.0.blocks.1.', 'enc0_block1.'),
+        ('layers.0.downsample.', 'enc0_down.'),
+        ('layers.1.blocks.0.', 'enc1_block0.'),
+        ('layers.1.blocks.1.', 'enc1_block1.'),
+        ('layers.1.blocks.0.', 'dec2_block0.'),
+        ('layers.1.blocks.1.', 'dec2_block1.'),
+        ('layers.0.blocks.0.', 'dec3_block0.'),
+        ('layers.0.blocks.1.', 'dec3_block1.'),
+    ]
+    loaded_keys = set()
+    for k, v in pretrained_state_dict.items():
+        for old_prefix, new_prefix in key_mapping:
+            if k.startswith(old_prefix):
+                new_k = k.replace(old_prefix, new_prefix, 1)
+                if new_k in model_state_dict and v.shape == model_state_dict[new_k].shape:
+                    if new_k not in loaded_keys:
+                        new_pretrained_state_dict[new_k] = v
+                        loaded_keys.add(new_k)
+    model.load_state_dict(new_pretrained_state_dict, strict=False)
+    print("load_state_done")
+    return model
+
+
 def seed_torch(seed=2981):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -379,8 +410,8 @@ def seed_torch(seed=2981):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = False # select a best algorithm
-    torch.backends.cudnn.deterministic = True # use deterministic algorithms
+    torch.backends.cudnn.benchmark = True # select a best algorithm
+    torch.backends.cudnn.deterministic = False # use deterministic algorithms
 
 def main():
     seed_torch()
@@ -418,12 +449,14 @@ def main():
     # create model
     model = archs.__dict__[config['arch']](
         config['num_classes'],
-        config['input_channels'],
+        config['in_chans'],
         config['deep_supervision'],
         embed_dims=config['input_list'],
         no_kan=config['no_kan']
     )
-
+    pretrained_path = 'pretrained/STPretrain.pth'
+    print("loading pretrained model...")
+    model = load_swin_transformer_weights(model, pretrained_path)
     model = model.cuda()
 
     param_groups = []
@@ -639,8 +672,8 @@ def main():
             torch.cuda.empty_cache()
     else:
         # close computer when for loop done
-        os.system("shutdown /s /t 3")
-        # pass
+        # os.system("shutdown /s /t 3")
+        pass
 
 if __name__ == '__main__':
     main()
