@@ -454,7 +454,7 @@ def main():
         embed_dims=config['input_list'],
         no_kan=config['no_kan']
     )
-    pretrained_path = 'pretrained/STPretrain.pth'
+    pretrained_path = '../pretrained/STPretrain.pth'
     print("loading pretrained model...")
     model = load_swin_transformer_weights(model, pretrained_path)
     model = model.cuda()
