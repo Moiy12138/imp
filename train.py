@@ -151,7 +151,7 @@ def parse_args():
     parser.add_argument(
         '--lr',
         '--learning_rate',
-        default=0.01,
+        default=0.0005,
         type=float,
         metavar='LR',
         help='initial learning rate'
@@ -436,7 +436,7 @@ def main():
     print('-' * 20)
 
     with open(f'{output_dir}/{exp_name}/config.yml', 'w') as f:
-        yaml.dump(config, f)
+        yaml.dump(config, f, sort_keys=True)
 
     # define loss function (criterion)
     if config['loss'] == 'BCEWithLogitsLoss':
@@ -455,8 +455,8 @@ def main():
         no_kan=config['no_kan']
     )
     pretrained_path = '../pretrained/STPretrain.pth'
-    print("loading pretrained model...")
-    model = load_swin_transformer_weights(model, pretrained_path)
+    #print("loading pretrained model...")
+    #model = load_swin_transformer_weights(model, pretrained_path)
     model = model.cuda()
 
     param_groups = []

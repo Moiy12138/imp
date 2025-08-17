@@ -250,13 +250,13 @@ class STPatchEmbed(nn.Module):
 
     Args:
         img_size (int): Image size.  Default: 224.
-        patch_size (int): Patch token size. Default: 4.
+        patch_size (int): Patch token size. Default: 2.
         in_chans (int): Number of input image channels. Default: 3.
-        embed_dim (int): Number of linear projection output channels. Default: 96.
+        embed_dim (int): Number of linear projection output channels. Default: 48.
         norm_layer (nn.Module, optional): Normalization layer. Default: None
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None):
+    def __init__(self, img_size=224, patch_size=2, in_chans=3, embed_dim=48, norm_layer=None):
         super().__init__()
         img_size = to_2tuple(img_size)
         patch_size = to_2tuple(patch_size)
@@ -646,8 +646,8 @@ class PatchMerging(nn.Module):
         flops += (H // 2) * (W // 2) * 4 * self.dim * 2 * self.dim
         return flops
 
-class FinalPatchExpand_X4(nn.Module):
-    def __init__(self, input_resolution, dim, dim_scale=4, norm_layer=nn.LayerNorm):
+class FinalPatchExpand_X2(nn.Module):
+    def __init__(self, input_resolution, dim, dim_scale=2, norm_layer=nn.LayerNorm):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
@@ -713,12 +713,12 @@ class UKAN(nn.Module):
             norm_layer=nn.LayerNorm,
             depths=[1, 1, 1],
             # ST init
-            STpatch_size=4,
+            STpatch_size=2,
             STdepths=[2, 2, 2],
             mlp_ratio=4.,
             patch_norm=True,
             final_upsample="expand_first",
-            STembed_dim=96,
+            STembed_dim=48,
             num_heads=[3, 6, 12, 24],
             window_size=7,
             qkv_bias=True,
@@ -736,6 +736,7 @@ class UKAN(nn.Module):
         self.patch_norm = patch_norm
         self.final_upsample = final_upsample
         self.norm_enc_out = norm_layer(embed_dims[0])
+        self.bottleneck_weight = nn.Parameter(torch.ones(1))
 
         self.patch_embed = STPatchEmbed(
             img_size=img_size,
@@ -755,8 +756,8 @@ class UKAN(nn.Module):
         dpr_s2 = ST_dpr[STdepths[0]+STdepths[1]:STdepths[0]+STdepths[1]+STdepths[2]]
         # ==============================================================
         # encoder
-        res0 = (patches_resolution[0], patches_resolution[1])        
-        dim0 = STembed_dim # 96
+        res0 = (patches_resolution[0], patches_resolution[1]) # 112 112    
+        dim0 = STembed_dim # 48
         self.enc0_block0 = STransformerBlock(
             dim=dim0,
             input_resolution=res0,
@@ -794,8 +795,8 @@ class UKAN(nn.Module):
         )
 
         # =========================================================
-        res1 = (res0[0]//2, res0[1]//2)   # 28,28
-        dim1 = dim0 * 2 # 192
+        res1 = (res0[0]//2, res0[1]//2)   # 56 56
+        dim1 = dim0 * 2 # 96
         self.enc1_block0 = STransformerBlock(
             dim=dim1,
             input_resolution=res1,
@@ -826,10 +827,89 @@ class UKAN(nn.Module):
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
-        # Stage 2: (28x28 192) + skip1(28x28 192)
-        self.dec2_concat_linear = nn.Linear(192+192, 192)
+        # 28 28 192
+        self.enc1_down = PatchMerging(
+            input_resolution=res1,
+            dim=dim1,
+            norm_layer=norm_layer,
+        )
+        # =========================================================
+        res2 = (res1[0]//2, res1[1]//2)   # 28,28
+        dim2 = dim1 * 2 # 192
+        self.enc2_block0 = STransformerBlock(
+            dim=dim2,
+            input_resolution=res2,
+            num_heads=num_heads[2],
+            window_size=window_size,
+            shift_size=0,
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            drop=drop_rate,
+            attn_drop=attn_drop_rate,
+            drop_path=dpr_s2[0],
+            act_layer=nn.GELU,
+            norm_layer=norm_layer,
+        )
+        self.enc2_block1 = STransformerBlock(
+            dim=dim2,
+            input_resolution=res2,
+            num_heads=num_heads[2],
+            window_size=window_size,
+            shift_size=window_size // 2,
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            drop=drop_rate,
+            attn_drop=attn_drop_rate,
+            drop_path=dpr_s2[1],
+            act_layer=nn.GELU,
+            norm_layer=norm_layer,
+        )
+
+
+        self.dec2_concat_linear = nn.Linear(dim2+dim2, dim2)
         self.dec2_block0 = STransformerBlock(
-            dim=192,
+            dim=dim2,
+            input_resolution=res2,
+            num_heads=num_heads[2],
+            window_size=window_size,
+            shift_size=0,
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            drop=drop_rate,
+            attn_drop=attn_drop_rate,
+            drop_path=drop_patch_rate,
+            act_layer=nn.GELU,
+            norm_layer=norm_layer,
+        )
+        self.dec2_block1 = STransformerBlock(
+            dim=dim2,
+            input_resolution=res2,
+            num_heads=num_heads[2],
+            window_size=window_size,
+            shift_size=window_size // 2,
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            drop=drop_rate,
+            attn_drop=attn_drop_rate,
+            drop_path=drop_patch_rate,
+            act_layer=nn.GELU,
+            norm_layer=norm_layer,
+        )
+        self.dec2_up = PatchExpand(
+            input_resolution=res2,
+            dim=dim2,
+            dim_scale=2,
+            norm_layer=norm_layer,
+        )
+
+        # Stage 1: (56x56 96) + skip0(56x56 96)
+        self.dec1_concat_linear = nn.Linear(dim1+dim1, dim1)
+        self.dec1_block0 = STransformerBlock(
+            dim=dim1,
             input_resolution=res1,
             num_heads=num_heads[1],
             window_size=window_size,
@@ -843,8 +923,8 @@ class UKAN(nn.Module):
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
-        self.dec2_block1 = STransformerBlock(
-            dim=192,
+        self.dec1_block1 = STransformerBlock(
+            dim=dim1,
             input_resolution=res1,
             num_heads=num_heads[1],
             window_size=window_size,
@@ -858,17 +938,17 @@ class UKAN(nn.Module):
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
-        self.dec2_up = PatchExpand(
+        self.dec1_up = PatchExpand(
             input_resolution=res1,
-            dim=192,
+            dim=dim1,
             dim_scale=2,
             norm_layer=norm_layer,
         )
 
-        # Stage 3: (56x56 96) + skip0(56x56 96)
-        self.dec3_concat_linear = nn.Linear(96+96, 96)
-        self.dec3_block0 = STransformerBlock(
-            dim=96,
+        # Stage 0: (112x112 48) + skip0(112x112 48)
+        self.dec0_concat_linear = nn.Linear(dim0+dim0, dim0)
+        self.dec0_block0 = STransformerBlock(
+            dim=dim0,
             input_resolution=res0,
             num_heads=num_heads[0],
             window_size=window_size,
@@ -882,8 +962,8 @@ class UKAN(nn.Module):
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
-        self.dec3_block1 = STransformerBlock(
-            dim=96,
+        self.dec0_block1 = STransformerBlock(
+            dim=dim0,
             input_resolution=res0,
             num_heads=num_heads[0],
             window_size=window_size,
@@ -899,12 +979,12 @@ class UKAN(nn.Module):
         )
         self.norm_up = norm_layer(STembed_dim)
 
-        # Final 4x
+        # Final 2x
         if self.final_upsample == "expand_first":
-            self.up4 = FinalPatchExpand_X4(
+            self.up2 = FinalPatchExpand_X2(
                 input_resolution=(img_size // STpatch_size, img_size // STpatch_size),
                 dim=STembed_dim,
-                dim_scale=4,
+                dim_scale=2,
                 norm_layer=norm_layer,
             )
             self.output = nn.Conv2d(
@@ -919,6 +999,7 @@ class UKAN(nn.Module):
         # -----------------------end
         self.norm3 = norm_layer(embed_dims[1]) # 384
         self.norm4 = norm_layer(embed_dims[2]) # 768
+        self.norm4_b = norm_layer(embed_dims[2]) # 768
 
         self.dnorm3 = norm_layer(embed_dims[1]) # 384
         self.dnorm4 = norm_layer(embed_dims[0]) # 192
@@ -936,6 +1017,16 @@ class UKAN(nn.Module):
             ]
         )
         self.block2 = nn.ModuleList(
+            [
+                KANBlock(
+                    dim=embed_dims[2],
+                    drop=drop_rate,
+                    drop_path=dpr[1],
+                    norm_layer=norm_layer
+                )
+            ]
+        )
+        self.block2_b = nn.ModuleList(
             [
                 KANBlock(
                     dim=embed_dims[2],
@@ -982,15 +1073,16 @@ class UKAN(nn.Module):
 
     def forward_features(self, x):
         # input (B 3 224 224) output (B 56*56 96)
+        # input (B 3 224 224) output (B 112*112 48)
         x = self.patch_embed(x)
         x = self.pos_drop(x)
         skip0 = x
 
         # Stage 0
-        # input (B 56*56 96)
+        # input (B 112*112 48)
         x = self.enc0_block0(x)
         x = self.enc0_block1(x)
-        # output (B 28*28 192)
+        # output (B 56*56 96)
         x = self.enc0_down(x)
         skip1 = x
 
@@ -998,24 +1090,31 @@ class UKAN(nn.Module):
         x = self.enc1_block0(x)
         x = self.enc1_block1(x)
         # x = (B 28*28 192)
+        x = self.enc1_down(x)
+        skip2 = x
+
+        # Stage 2
+        x = self.enc2_block0(x)
+        x = self.enc2_block1(x)
+        # x = (B 28*28 192)
         x = self.norm_enc_out(x)
-        return x, (skip0, skip1)
+        return x, (skip0, skip1, skip2)
     
     def forward_bottleneck(self, x):
         # Tokenized KAN Stage 1
-        # x.shape = (B 28*28 192)
         B, L, C = x.shape
         H = W = int(L ** 0.5)
         x = x.view(B, H, W, C).permute(0, 3, 1, 2)
+        skip2 = x
         #  (B, 192, 28, 28) (B, 14*14, 384) H=14, W=14
         out, H, W = self.patch_embed3(x)
-
+        # x.shape = (B 28*28 192)
         for i, blk in enumerate(self.block1):
             out = blk(out, H, W)
         out = self.norm3(out)
         out = out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         # (B, 384, 14, 14)
-        skip2 = out
+        skip1 = out
 
         # Tokenized KAN Stage 2 Bottleneck
         # (B, 384, 14, 14) (B, 7*7, 768), H=7, W=7
@@ -1024,13 +1123,18 @@ class UKAN(nn.Module):
             out = blk(out, H, W)
         out = self.norm4(out)
         # (B, 768, 7, 7)
+        skip0 = out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        for i, blk in enumerate(self.block2_b):
+            out = blk(out, H, W)
+        out = self.norm4_b(out)
+        # (B, 768, 7, 7)
         out = out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        
+        out = skip0 + self.bottleneck_weight * out
 
         # Tokenized KAN Stage 3
         # decoder input (B, 768, 7, 7) out = (B, 384, 14, 14)
         out = F.relu(F.interpolate(self.decoder1(out), scale_factor=(2,2), mode='bilinear'))
-        out = torch.add(out, skip2)
+        out = torch.add(out, skip1)
         # H 14 W 14
         _, _, H, W = out.shape
         # out (B, 14*14, 384)
@@ -1045,41 +1149,54 @@ class UKAN(nn.Module):
         # decoder Stage 4
         # out (B, 192, 28, 28)
         out = F.relu(F.interpolate(self.decoder2(out), scale_factor=(2,2), mode='bilinear'))
-        B, C, H, W = out.shape
-        out = out.flatten(2).transpose(1, 2)
+        out = torch.add(out,skip2)
+        _,_,H,W = out.shape
+        out = out.flatten(2).transpose(1,2)
+        for i, blk in enumerate(self.dblock2):
+            out = blk(out, H, W)
         out = self.dnorm4(out)
-        out = out.transpose(1, 2).view(B, C, H, W)
+        # out (B, 192, 28, 28)
+        out = out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
         return out
 
     def forward_up_features(self, x, skips):
-        skip0, skip1 = skips
+        skip0, skip1, skip2 = skips
         # x.shape = (B 192 28 28)
         # x = (B, 784, 192)
         x = x.flatten(2).transpose(1, 2)
 
-        x = torch.cat([x, skip1], dim=-1)
+        x = torch.cat([x, skip2], dim=-1)
         x = self.dec2_concat_linear(x)
         x = self.dec2_block0(x)
         x = self.dec2_block1(x)
         # (B, 3136, 96)
         x = self.dec2_up(x)
 
-        # Decoder 3
+        # Decoder 1
+        x = torch.cat([x, skip1], dim=-1)
+        x = self.dec1_concat_linear(x)
+        x = self.dec1_block0(x)
+        x = self.dec1_block1(x)
+        # (B, 112*112 48)
+        x = self.dec1_up(x)
+
+        # Decoder 0
         x = torch.cat([x, skip0], dim=-1)
-        x = self.dec3_concat_linear(x)
-        x = self.dec3_block0(x)
-        x = self.dec3_block1(x)
+        x = self.dec0_concat_linear(x)
+        x = self.dec0_block0(x)
+        x = self.dec0_block1(x)
         x = self.norm_up(x)            
 
         return x
 
-    def up_x4(self, x):
+    def final_x2(self, x):
         B, L, C = x.shape
         H, W = self.patches_resolution
         assert L == H * W
         if self.final_upsample == "expand_first":
-            x = self.up4(x)              # 56->224
-            x = x.view(B, 4*H, 4*W, -1).permute(0,3,1,2)
+            x = self.up2(x)              # 112->224
+            x = x.view(B, 2*H, 2*W, -1).permute(0,3,1,2)
             x = self.output(x)
         return x
 
@@ -1087,5 +1204,5 @@ class UKAN(nn.Module):
         x, skips = self.forward_features(x)
         x = self.forward_bottleneck(x)
         x = self.forward_up_features(x, skips)
-        x = self.up_x4(x)
+        x = self.final_x2(x)
         return x
