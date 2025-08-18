@@ -36,6 +36,7 @@ from pdb import set_trace as st
 
 LOSS_NAMES = losses.__all__
 LOSS_NAMES.append('BCEWithLogitsLoss')
+LOSS_NAMES.append('FocalDiceLoss')
 
 def list_type(s):
     str_list = s.split(',')
@@ -52,7 +53,7 @@ def parse_args():
     )
     parser.add_argument(
         '--epochs', 
-        default=400,
+        default=500,
         type=int,
         metavar='N',
         help='number of total epochs to run'
@@ -123,6 +124,30 @@ def parse_args():
         choices=LOSS_NAMES,
         help='loss:' + ' | '.join(LOSS_NAMES) + '(default:BCEDiceLoss)'
     )
+    parser.add_argument(
+        '--focal_alpha',
+        default=0.25,
+        type=float,
+        help='focal loss alpha parameter (default: 1.0)'
+    )
+    parser.add_argument(
+        '--focal_gamma',
+        default=2.0,
+        type=float,
+        help='focal loss gamma parameter (default: 2.0)'
+    )
+    parser.add_argument(
+        '--dice_weight',
+        default=1.0,
+        type=float,
+        help='dice loss weight in combination (default: 0.5)'
+    )
+    parser.add_argument(
+        '--loss_smooth',
+        default=1e-6,
+        type=float,
+        help='smooth factor for dice loss (default: 1e-6)'
+    )
     
     # dataset
     parser.add_argument(
@@ -144,9 +169,9 @@ def parse_args():
     # optimizer
     parser.add_argument(
         '--optimizer',
-        default='Adam',
-        choices=['Adam', 'SGD'],
-        help='optim: ' + ' | '.join(['Adam', 'SGD']) + '(default:Adam)'
+        default='AdamW',
+        choices=['AdamW', 'Adam', 'SGD'],
+        help='optim: ' + ' | '.join(['AdamW', 'Adam', 'SGD']) + '(default:AdamW)'
     )
     parser.add_argument(
         '--lr',
@@ -164,7 +189,7 @@ def parse_args():
     )
     parser.add_argument(
         '--weight_decay',
-        default=1e-3,
+        default=1e-4,
         type=float,
         help='weight decay'
     )
@@ -176,7 +201,7 @@ def parse_args():
     )
     parser.add_argument(
         '--kan_lr',
-        default=1e-2,
+        default=5e-4,
         type=float,
         metavar='LR',
         help='initial learning rate'
@@ -196,7 +221,7 @@ def parse_args():
     )
     parser.add_argument(
         '--min_lr',
-        default=1e-5,
+        default=1e-6,
         type=float,
         help='minimum learning rate'
     )
@@ -207,7 +232,7 @@ def parse_args():
     )
     parser.add_argument(
         '--patience',
-        default=2,
+        default=4,
         type=int
     )
     parser.add_argument(
@@ -414,7 +439,7 @@ def seed_torch(seed=2981):
     torch.backends.cudnn.deterministic = False # use deterministic algorithms
 
 def main():
-    seed_torch()
+    #seed_torch()
     config = vars(parse_args())
 
     exp_name = config.get('name')
@@ -439,7 +464,14 @@ def main():
         yaml.dump(config, f, sort_keys=True)
 
     # define loss function (criterion)
-    if config['loss'] == 'BCEWithLogitsLoss':
+    if config['loss'] == 'FocalDiceLoss':
+        criterion = losses.FocalDiceLoss(
+            alpha=config['focal_alpha'],
+            gamma=config['focal_gamma'],
+            dice_weight=config['dice_weight'],
+            smooth=config['loss_smooth']
+        ).cuda()
+    elif config['loss'] == 'BCEWithLogitsLoss':
         criterion = nn.BCEWithLogitsLoss().cuda()
     else:
         criterion = losses.__dict__[config['loss']]().cuda()
@@ -484,8 +516,10 @@ def main():
                     'weight_decay':config['weight_decay']
                 }
             )
-        
-    if config['optimizer'] == 'Adam':
+    if config['optimizer'] == 'AdamW':
+        optimizer = optim.AdamW(param_groups, eps=1e-8, amsgrad=True)
+    
+    elif config['optimizer'] == 'Adam':
         optimizer = optim.Adam(param_groups)
 
     elif config['optimizer'] == 'SGD':
@@ -496,7 +530,7 @@ def main():
     if config['scheduler'] == 'CosineAnnealingLR':
         scheduler = lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=config['epochs'],
+            T_max=config['epochs']//4,
             eta_min=config['min_lr']
         )
     elif config['scheduler'] == 'ReduceLROnPlateau':
@@ -504,7 +538,7 @@ def main():
             optimizer,
             factor=config['factor'],
             patience=config['patience'],
-            verbose=1,
+            verbose=True,
             min_lr=config['min_lr']
         )
     elif config['scheduler'] == 'MultiStepLR':
@@ -537,7 +571,7 @@ def main():
     img_ids = sorted(glob(os.path.join(config['data_dir'], config['dataset'], 'images', '*' + img_ext)))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
 
-    train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2, random_state=config['dataseed'])
+    train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2)
 
     train_transform = Compose([
         albu.RandomRotate90(),
