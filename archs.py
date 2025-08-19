@@ -381,11 +381,11 @@ class WindowAttention(nn.Module):
         num_heads (int): Number of attention heads.
         qkv_bias (bool, optional):  If True, add a learnable bias to query, key, value. Default: True
         qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set
-        attn_drop (float, optional): Dropout ratio of attention weight. Default: 0.1
-        proj_drop (float, optional): Dropout ratio of output. Default: 0.1
+        attn_drop (float, optional): Dropout ratio of attention weight. Default: 0.
+        proj_drop (float, optional): Dropout ratio of output. Default: 0.
     """
 
-    def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0.1, proj_drop=0.1):
+    def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.):
 
         super().__init__()
         self.dim = dim
@@ -482,15 +482,15 @@ class STransformerBlock(nn.Module):
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
         qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
         qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set.
-        drop (float, optional): Dropout rate. Default: 0.1
-        attn_drop (float, optional): Attention dropout rate. Default: 0.1
-        drop_path (float, optional): Stochastic depth rate. Default: 0.1
+        drop (float, optional): Dropout rate. Default: 0.
+        attn_drop (float, optional): Attention dropout rate. Default: 0.
+        drop_path (float, optional): Stochastic depth rate. Default: 0.
         act_layer (nn.Module, optional): Activation layer. Default: nn.GELU
         norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
 
     def __init__(self, dim, input_resolution, num_heads, window_size=7, shift_size=0,
-                 mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0.1, attn_drop=0.1, drop_path=0.1,
+                 mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0., drop_path=0.,
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.dim = dim
@@ -707,8 +707,8 @@ class UKAN(nn.Module):
             patch_size=16,
             embed_dims=[192, 384, 768],
             no_kan=False,
-            drop_rate=0.1,
-            drop_patch_rate=0.1,
+            drop_rate=0.,
+            drop_patch_rate=0.,
             norm_layer=nn.LayerNorm,
             depths=[1, 1, 1],
             # ST init
@@ -722,7 +722,7 @@ class UKAN(nn.Module):
             window_size=7,
             qkv_bias=True,
             qk_scale=None,
-            attn_drop_rate=0.1,
+            attn_drop_rate=0.,
             **kwargs,
         ):
         super().__init__()
@@ -1122,13 +1122,13 @@ class UKAN(nn.Module):
             out = blk(out, H, W)
         out = self.norm4(out)
         # (B, 768, 7, 7)
+        skip0 = out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        for i, blk in enumerate(self.block2_b):
+            out = blk(out, H, W)
+        out = self.norm4_b(out)
+        # (B, 768, 7, 7)
         out = out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        # for i, blk in enumerate(self.block2_b):
-        #     out = blk(out, H, W)
-        # out = self.norm4_b(out)
-        # # (B, 768, 7, 7)
-        # out = out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        # out = skip0 + self.bottleneck_weight * out
+        out = torch.add(out, skip0)
 
         # Tokenized KAN Stage 3
         # decoder input (B, 768, 7, 7) out = (B, 384, 14, 14)

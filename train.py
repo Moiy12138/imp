@@ -120,9 +120,9 @@ def parse_args():
     # loss
     parser.add_argument(
         '--loss',
-        default='BCEDiceLoss',
+        default='FocalDiceLoss',
         choices=LOSS_NAMES,
-        help='loss:' + ' | '.join(LOSS_NAMES) + '(default:BCEDiceLoss)'
+        help='loss:' + ' | '.join(LOSS_NAMES) + '(default:BCEDiceLoss, FocalDiceLoss)'
     )
     parser.add_argument(
         '--focal_alpha',
@@ -208,7 +208,7 @@ def parse_args():
     )
     parser.add_argument(
         '--kan_weight_decay',
-        default=1e-4,
+        default=1e-5,
         type=float,
         help='weight decay'
     )
@@ -307,6 +307,7 @@ def train(config, train_loader, model, criterion, optimizer):
         # compute gradient and do optimizing step
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         avg_meters['loss'].update(loss.item(), input.size(0))
@@ -530,7 +531,7 @@ def main():
     if config['scheduler'] == 'CosineAnnealingLR':
         scheduler = lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=config['epochs']//4,
+            T_max=config['epochs'],
             eta_min=config['min_lr']
         )
     elif config['scheduler'] == 'ReduceLROnPlateau':
@@ -576,6 +577,9 @@ def main():
     train_transform = Compose([
         albu.RandomRotate90(),
         albu.HorizontalFlip(),
+        albu.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+        albu.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=45, p=0.3),
+        albu.ElasticTransform(p=0.2),
         albu.Resize(config['input_h'], config['input_w']),
         albu.Normalize(),
     ])
