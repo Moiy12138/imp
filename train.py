@@ -78,7 +78,7 @@ def parse_args():
         '--arch',
         '-a',
         metavar='ARCH',
-        default='UKAN'
+        default='MY_Unet'
     )
 
     parser.add_argument(
@@ -451,7 +451,7 @@ def main():
         if config['deep_supervision']:
             config['name'] = '%s_%s_wDS' % (config['dataset'], config['arch'])
         else:
-            config['name'] = '%s_%s_woDS' % (config['dataset'], config['arch'])
+            config['name'] = '%s_%s_wnoDS' % (config['dataset'], config['arch'])
 
     os.makedirs(f'{output_dir}/{exp_name}', exist_ok=True)
 
