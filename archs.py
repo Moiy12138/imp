@@ -479,7 +479,7 @@ class STransformerBlock(nn.Module):
         num_heads (int): Number of attention heads.
         window_size (int): Window size.
         shift_size (int): Shift size for SW-MSA.
-        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+        mlp_ratio (float): Ratio of mlp or kan_layer hidden dim to embedding dim.
         qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
         qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set.
         drop (float, optional): Dropout rate. Default: 0.
@@ -879,7 +879,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
+            drop_path=dpr_s2[0],
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -894,7 +894,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
+            drop_path=dpr_s2[1],
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -918,7 +918,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
+            drop_path=dpr_s1[0],
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -933,7 +933,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
+            drop_path=dpr_s1[1],
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -957,7 +957,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
+            drop_path=dpr_s0[0],
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -972,7 +972,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
+            drop_path=dpr_s0[1],
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -1055,8 +1055,8 @@ class UKAN(nn.Module):
                 )
             ]
         )
-        self.patch_embed3 = PatchEmbed(img_size=img_size // 4, patch_size=3, stride=2, in_chans=embed_dims[0], embed_dim=embed_dims[1]) 
-        self.patch_embed4 = PatchEmbed(img_size=img_size // 8, patch_size=3, stride=2, in_chans=embed_dims[1], embed_dim=embed_dims[2])
+        self.patch_embed3 = PatchEmbed(img_size=img_size // 8, patch_size=3, stride=2, in_chans=embed_dims[0], embed_dim=embed_dims[1]) 
+        self.patch_embed4 = PatchEmbed(img_size=img_size // 16, patch_size=3, stride=2, in_chans=embed_dims[1], embed_dim=embed_dims[2])
 
         self.decoder1 = D_ConvLayer(embed_dims[2], embed_dims[1]) # 768 => 384
         self.decoder2 = D_ConvLayer(embed_dims[1], embed_dims[0]) # 384 => 192
