@@ -53,7 +53,7 @@ def parse_args():
     )
     parser.add_argument(
         '--epochs', 
-        default=500,
+        default=600,
         type=int,
         metavar='N',
         help='number of total epochs to run'
@@ -61,7 +61,6 @@ def parse_args():
     parser.add_argument(
         '-b',
         '--batch_size',
-        # 8:GPU 6G 16:10G
         default=8,
         type=int,
         metavar='N',
@@ -79,7 +78,7 @@ def parse_args():
         '--arch',
         '-a',
         metavar='ARCH',
-        default='UKAN'
+        default='MY_Unet'
     )
 
     parser.add_argument(
@@ -350,7 +349,7 @@ def validate(config, val_loader, model, criterion):
             input = input.cuda()
             target = target.cuda()
 
-            # conpute output
+            # compute output
             if config['deep_supervision']:
                 outputs = model(input)
                 loss = 0
@@ -358,7 +357,7 @@ def validate(config, val_loader, model, criterion):
                     loss += criterion(output, target)
                 loss /= len(outputs)
                 iou, dice, _ = iou_score(outputs[-1], target)
-                dice_coef_val = dice_coef(output, target)
+                dice_coef_val = dice_coef(outputs[-1], target)
             else:
                 output = model(input)
                 loss = criterion(output, target)
@@ -452,14 +451,14 @@ def main():
         if config['deep_supervision']:
             config['name'] = '%s_%s_wDS' % (config['dataset'], config['arch'])
         else:
-            config['name'] = '%s_%s_woDS' % (config['dataset'], config['arch'])
+            config['name'] = '%s_%s_wnoDS' % (config['dataset'], config['arch'])
 
     os.makedirs(f'{output_dir}/{exp_name}', exist_ok=True)
 
-    print('-' * 20)
-    for key in config:
-        print('%s : %s' % (key, config[key]))
-    print('-' * 20)
+    # print('-' * 20)
+    # for key in config:
+    #     print('%s : %s' % (key, config[key]))
+    # print('-' * 20)
 
     with open(f'{output_dir}/{exp_name}/config.yml', 'w') as f:
         yaml.dump(config, f, sort_keys=True)
@@ -477,7 +476,7 @@ def main():
     else:
         criterion = losses.__dict__[config['loss']]().cuda()
 
-    # cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = True
 
     # create model
     model = archs.__dict__[config['arch']](
@@ -571,14 +570,15 @@ def main():
     # Data loading code
     img_ids = sorted(glob(os.path.join(config['data_dir'], config['dataset'], 'images', '*' + img_ext)))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
-
+    # dataseed
     train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2)
 
     train_transform = Compose([
         albu.RandomRotate90(),
         albu.HorizontalFlip(),
         albu.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        albu.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=45, p=0.3),
+        #albu.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=45, p=0.3),
+        albu.Affine(translate_percent=(-0.0625, 0.0625), scale=(0.9, 1.1), rotate=(-45, 45), p=0.3),
         albu.ElasticTransform(p=0.2),
         albu.Resize(config['input_h'], config['input_w']),
         albu.Normalize(),
@@ -645,14 +645,16 @@ def main():
         ('lr', []),
         ('train_loss', []),
         ('train_iou', []),
+        ('train_dice_coef_val', []),
         ('val_loss', []),
         ('val_iou', []),
         ('val_dice', []),
+        ('val_dice_coef_val', []),
     ])
     
     best_iou = 0
     best_dice = 0
-    trigger = 0
+    #trigger = 0
 
     for epoch in range(config['epochs']):
         print('Epoch [%d/%d]' % (epoch, config['epochs']))
@@ -669,17 +671,20 @@ def main():
             scheduler.step(val_log['loss'])
 
         print(
-            'train_loss %.4f - train_iou %.4f - train_dice_coef_val %.4f - val_loss %.4f - val_iou %.4f - val_dice_coef_val %.4f'
-            % (train_log['loss'], train_log['iou'], train_log['dice_coef_val'], val_log['loss'], val_log['iou'], val_log['dice_coef_val'])
+            'train_loss %.4f - train_iou %.4f - val_loss %.4f - val_iou %.4f '
+            % (train_log['loss'], train_log['iou'], val_log['loss'], val_log['iou'])
         )
-
+        current_lr = optimizer.param_groups[0]['lr']
         log['epoch'].append(epoch)
-        log['lr'].append(config['lr'])
+        log['lr'].append(current_lr)
         log['train_loss'].append(train_log['loss'])
         log['train_iou'].append(train_log['iou'])
+        log['train_dice_coef_val'].append(train_log['dice_coef_val'])
         log['val_loss'].append(val_log['loss'])
         log['val_iou'].append(val_log['iou'])
         log['val_dice'].append(val_log['dice'])
+        log['val_dice_coef_val'].append(val_log['dice_coef_val'])
+        
 
         pd.DataFrame(log).to_csv(f'{output_dir}/{exp_name}/log.csv', index=False)
 
@@ -688,10 +693,12 @@ def main():
         my_writer.add_scalar('train/iou', train_log['iou'], global_step=epoch)
         my_writer.add_scalar('val/loss', val_log['loss'], global_step=epoch)
         my_writer.add_scalar('val/iou', val_log['iou'], global_step=epoch)
+        my_writer.add_scalar('val/dice', val_log['dice'], global_step=epoch)
+        my_writer.add_scalar('val/dice_coef', val_log['dice_coef_val'], global_step=epoch)
         my_writer.add_scalar('val/best_iou_value', best_iou, global_step=epoch)
         my_writer.add_scalar('val/best_dice_value', best_dice, global_step=epoch)
 
-        trigger += 1
+        #trigger += 1
 
         if val_log['iou'] > best_iou:
             torch.save(model.state_dict(), f'{output_dir}/{exp_name}/model.pth')
@@ -700,12 +707,12 @@ def main():
             print("=> saved best model")
             print('Best_IoU: %.4f' % best_iou)
             print('Best_Dice: %.4f' % best_dice)
-            trigger = 0
+            
 
             # early stopping
-            if config['early_stopping'] >= 0 and trigger >= config['early_stopping']:
-                print("=> early stopping")
-                break
+            # if config['early_stopping'] >= 0 and trigger >= config['early_stopping']:
+            #     print("=> early stopping")
+            #     break
 
             torch.cuda.empty_cache()
     else:
