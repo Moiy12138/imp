@@ -168,7 +168,7 @@ def parse_args():
     # optimizer
     parser.add_argument(
         '--optimizer',
-        default='AdamW',
+        default='SGD',
         choices=['AdamW', 'Adam', 'SGD'],
         help='optim: ' + ' | '.join(['AdamW', 'Adam', 'SGD']) + '(default:AdamW)'
     )
@@ -220,7 +220,7 @@ def parse_args():
     )
     parser.add_argument(
         '--min_lr',
-        default=1e-6,
+        default=1e-5,
         type=float,
         help='minimum learning rate'
     )
@@ -259,7 +259,7 @@ def parse_args():
     )
     parser.add_argument(
         '--num_workers',
-        default=4,
+        default=8,
         type=int
     )
     parser.add_argument(
@@ -428,7 +428,7 @@ def load_swin_transformer_weights(model: torch.nn.Module, checkpoint_path: str):
     return model
 
 
-def seed_torch(seed=2981):
+def seed_torch(seed=99):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
@@ -439,7 +439,7 @@ def seed_torch(seed=2981):
     torch.backends.cudnn.deterministic = False # use deterministic algorithms
 
 def main():
-    #seed_torch()
+    seed_torch()
     config = vars(parse_args())
 
     exp_name = config.get('name')
@@ -513,7 +513,7 @@ def main():
                 {
                     'params':param,
                     'lr':config['lr'],
-                    'weight_decay':config['weight_decay']
+                    'weight_decay':config['weight_decay'],
                 }
             )
     if config['optimizer'] == 'AdamW':
@@ -531,7 +531,7 @@ def main():
         scheduler = lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=config['epochs'],
-            eta_min=config['min_lr']
+            eta_min=config['min_lr'],
         )
     elif config['scheduler'] == 'ReduceLROnPlateau':
         scheduler = lr_scheduler.ReduceLROnPlateau(
@@ -576,9 +576,9 @@ def main():
     train_transform = Compose([
         albu.RandomRotate90(),
         albu.HorizontalFlip(),
-        albu.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        #albu.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=45, p=0.3),
-        albu.Affine(translate_percent=(-0.0625, 0.0625), scale=(0.9, 1.1), rotate=(-45, 45), p=0.3),
+        #albu.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+        albu.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.05, rotate_limit=30, p=0.2),
+        #albu.Affine(translate_percent=(-0.0625, 0.0625), scale=(0.9, 1.1), rotate=(-45, 45), p=0.3),
         albu.ElasticTransform(p=0.2),
         albu.Resize(config['input_h'], config['input_w']),
         albu.Normalize(),

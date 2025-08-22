@@ -370,6 +370,36 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+class DWSConv(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0., norm_layer=nn.LayerNorm):
+        super().__init__()
+        out_features = out_features or in_features
+        # hidden_dim is 4x rate by default
+        hidden_features = hidden_features or in_features
+        self.pw_conv1 = nn.Conv2d(in_features, hidden_features, kernel_size=1, bias=True)
+        self.norm1 = norm_layer(hidden_features)
+        self.dw_conv = nn.Conv2d(hidden_features, hidden_features, kernel_size=3, 
+                                stride=1, padding=1, groups=hidden_features, bias=True)
+        self.norm2 = norm_layer(hidden_features)
+        self.act = act_layer()
+        self.pw_conv2 = nn.Conv2d(hidden_features, out_features, kernel_size=1, bias=True)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x, H, W):
+        B, N, C = x.shape
+        x = x.transpose(1, 2).view(B, C, H, W)
+        x = self.pw_conv1(x)
+        #x = self.norm1(x)
+        x = self.dw_conv(x)
+        #x = self.norm2(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.pw_conv2(x)
+        x = self.drop(x)
+        x = x.flatten(2).transpose(1, 2)
+        
+        return x
+
 class WindowAttention(nn.Module):
     r""" 
     Window based multi-head self attention (W-MSA) module with relative position bias.
@@ -514,6 +544,7 @@ class STransformerBlock(nn.Module):
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        #self.dwsc = DWSConv(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
         if self.shift_size > 0:
             # calculate attention mask for SW-MSA
@@ -576,6 +607,7 @@ class STransformerBlock(nn.Module):
         # FFN
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
+        #x = x + self.drop_path(self.dwsc(self.norm2(x), H, W))
 
         return x
 
@@ -697,7 +729,7 @@ class PatchExpand(nn.Module):
         return x
 
 
-class UKAN(nn.Module):
+class MY_Unet(nn.Module):
     def __init__(
             self,
             num_classes,
@@ -879,7 +911,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=dpr_s2[0],
+            drop_path=drop_patch_rate,
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -894,7 +926,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=dpr_s2[1],
+            drop_path=drop_patch_rate,
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -918,7 +950,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=dpr_s1[0],
+            drop_path=drop_patch_rate,
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -933,7 +965,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=dpr_s1[1],
+            drop_path=drop_patch_rate,
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -957,7 +989,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=dpr_s0[0],
+            drop_path=drop_patch_rate,
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -972,7 +1004,7 @@ class UKAN(nn.Module):
             qk_scale=qk_scale,
             drop=drop_rate,
             attn_drop=attn_drop_rate,
-            drop_path=dpr_s0[1],
+            drop_path=drop_patch_rate,
             act_layer=nn.GELU,
             norm_layer=norm_layer,
         )
@@ -1055,8 +1087,8 @@ class UKAN(nn.Module):
                 )
             ]
         )
-        self.patch_embed3 = PatchEmbed(img_size=img_size // 8, patch_size=3, stride=2, in_chans=embed_dims[0], embed_dim=embed_dims[1]) 
-        self.patch_embed4 = PatchEmbed(img_size=img_size // 16, patch_size=3, stride=2, in_chans=embed_dims[1], embed_dim=embed_dims[2])
+        self.patch_embed3 = PatchEmbed(img_size=img_size // 4, patch_size=3, stride=2, in_chans=embed_dims[0], embed_dim=embed_dims[1]) 
+        self.patch_embed4 = PatchEmbed(img_size=img_size // 8, patch_size=3, stride=2, in_chans=embed_dims[1], embed_dim=embed_dims[2])
 
         self.decoder1 = D_ConvLayer(embed_dims[2], embed_dims[1]) # 768 => 384
         self.decoder2 = D_ConvLayer(embed_dims[1], embed_dims[0]) # 384 => 192
