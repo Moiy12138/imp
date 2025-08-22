@@ -168,7 +168,7 @@ def parse_args():
     # optimizer
     parser.add_argument(
         '--optimizer',
-        default='SGD',
+        default='AdamW',
         choices=['AdamW', 'Adam', 'SGD'],
         help='optim: ' + ' | '.join(['AdamW', 'Adam', 'SGD']) + '(default:AdamW)'
     )
