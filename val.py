@@ -31,7 +31,7 @@ def parse_args():
     )
     parser.add_argument(
         '--output_dir',
-        default='outputs',
+        default='../val_outputs',
         help='output dir'
     )
 
@@ -54,16 +54,16 @@ def main():
     with open(f'{args.output_dir}/{args.name}/config.yml', 'r') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
 
-    print('-' * 20)
-    for key in config.keys():
-        print('%s : %s' % (key, str(config[key])))
-    print('-' * 20)
+    # print('-' * 20)
+    # for key in config.keys():
+    #     print('%s : %s' % (key, str(config[key])))
+    # print('-' * 20)
 
     cudnn.benchmark = True
 
     model = archs.__dict__[config['arch']](
         config['num_classes'],
-        config['input_channels'],
+        config['in_chans'],
         config['deep_supervision'],
         embed_dims=config['input_list'],
     )
