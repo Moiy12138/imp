@@ -39,9 +39,9 @@ class KANLayer(nn.Module):
 
         grid_size = 5
         spline_order = 3
-        scale_noise = 0.01
+        scale_noise = 0.1
         scale_base = 1.0
-        scale_spline=0.5
+        scale_spline=1.0
         base_activation = torch.nn.SiLU
         grid_eps = 0.02
         grid_range = [-1, 1]
@@ -371,7 +371,7 @@ class Mlp(nn.Module):
         return x
 
 class DWSConv(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0., norm_layer=nn.LayerNorm):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0., norm_layer=nn.BatchNorm2d):
         super().__init__()
         out_features = out_features or in_features
         # hidden_dim is 4x rate by default
@@ -385,20 +385,49 @@ class DWSConv(nn.Module):
         self.pw_conv2 = nn.Conv2d(hidden_features, out_features, kernel_size=1, bias=True)
         self.drop = nn.Dropout(drop)
 
-    def forward(self, x, H, W):
-        B, N, C = x.shape
-        x = x.transpose(1, 2).view(B, C, H, W)
+    def forward(self, x):
+        # B, N, C = x.shape
+        # H = W = int(N ** 0.5)
+        # x = x.transpose(1, 2).view(B, C, H, W)
+        res = x
         x = self.pw_conv1(x)
-        #x = self.norm1(x)
+        x = self.norm1(x)
         x = self.dw_conv(x)
-        #x = self.norm2(x)
+        x = self.norm2(x)
         x = self.act(x)
         x = self.drop(x)
         x = self.pw_conv2(x)
         x = self.drop(x)
-        x = x.flatten(2).transpose(1, 2)
+        x = x + res
+        # x = x.flatten(2).transpose(1, 2)
         
         return x
+
+class eca_layer(nn.Module):
+    """Constructs a ECA module.
+
+    Args:
+        channel: Number of channels of the input feature map
+        k_size: Adaptive selection of kernel size
+    """
+    def __init__(self, channel, k_size=3):
+        super(eca_layer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=k_size, padding=(k_size - 1) // 2, bias=False) 
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # feature descriptor on the global spatial information
+        y = self.avg_pool(x)
+
+        # Two different branches of ECA module
+        y = self.conv(y.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+
+        # Multi-scale information fusion
+        y = self.sigmoid(y)
+
+        return x * y.expand_as(x)
+        
 
 class WindowAttention(nn.Module):
     r""" 
@@ -739,8 +768,8 @@ class MY_Unet(nn.Module):
             patch_size=16,
             embed_dims=[192, 384, 768],
             no_kan=False,
-            drop_rate=0.,
-            drop_patch_rate=0.,
+            drop_rate=0.1,
+            drop_patch_rate=0.1,
             norm_layer=nn.LayerNorm,
             depths=[1, 1, 1],
             # ST init
@@ -759,284 +788,322 @@ class MY_Unet(nn.Module):
         ):
         super().__init__()
 
-        # ST
-        self.num_classes = num_classes
-        self.embed_dim = STembed_dim
-        self.num_layers = len(depths)
-        self.mlp_ratio = mlp_ratio
-        self.patch_norm = patch_norm
-        self.final_upsample = final_upsample
-        self.norm_enc_out = norm_layer(embed_dims[0])
-        self.bottleneck_weight = nn.Parameter(torch.ones(1))
+        # # ST
+        # self.num_classes = num_classes
+        # self.embed_dim = STembed_dim
+        # self.num_layers = len(depths)
+        # self.mlp_ratio = mlp_ratio
+        # self.patch_norm = patch_norm
+        # self.final_upsample = final_upsample
+        # self.norm_enc_out = norm_layer(embed_dims[0])
 
-        self.patch_embed = STPatchEmbed(
-            img_size=img_size,
-            patch_size=STpatch_size,
-            in_chans=in_chans,
-            embed_dim=STembed_dim,
-            norm_layer=norm_layer,
-        )
+        # self.patch_embed = STPatchEmbed(
+        #     img_size=img_size,
+        #     patch_size=STpatch_size,
+        #     in_chans=in_chans,
+        #     embed_dim=STembed_dim,
+        #     norm_layer=norm_layer,
+        # )
 
-        num_patches = self.patch_embed.num_patches
-        patches_resolution = self.patch_embed.patches_resolution
-        self.patches_resolution = patches_resolution
-        self.pos_drop = nn.Dropout(p=drop_rate)
-        ST_dpr = [x.item() for x in torch.linspace(0, drop_patch_rate, sum(STdepths))]
-        dpr_s0 = ST_dpr[0:STdepths[0]]
-        dpr_s1 = ST_dpr[STdepths[0]:STdepths[0]+STdepths[1]]
-        dpr_s2 = ST_dpr[STdepths[0]+STdepths[1]:STdepths[0]+STdepths[1]+STdepths[2]]
-        # ==============================================================
-        # encoder
-        res0 = (patches_resolution[0], patches_resolution[1]) # 112 112    
-        dim0 = STembed_dim # 48
-        self.enc0_block0 = STransformerBlock(
-            dim=dim0,
-            input_resolution=res0,
-            num_heads=num_heads[0],
-            window_size=window_size,
-            shift_size=0,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=dpr_s0[0],
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.enc0_block1 = STransformerBlock(
-            dim=dim0,
-            input_resolution=res0,
-            num_heads=num_heads[0],
-            window_size=window_size,
-            shift_size=window_size // 2,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=dpr_s0[1],
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.enc0_down = PatchMerging(
-            input_resolution=res0,
-            dim=dim0,
-            norm_layer=norm_layer,
-        )
+        # num_patches = self.patch_embed.num_patches
+        # patches_resolution = self.patch_embed.patches_resolution
+        # self.patches_resolution = patches_resolution
+        # self.pos_drop = nn.Dropout(p=drop_rate)
+        # ST_dpr = [x.item() for x in torch.linspace(0, drop_patch_rate, sum(STdepths))]
+        # dpr_s0 = ST_dpr[0:STdepths[0]]
+        # dpr_s1 = ST_dpr[STdepths[0]:STdepths[0]+STdepths[1]]
+        # dpr_s2 = ST_dpr[STdepths[0]+STdepths[1]:STdepths[0]+STdepths[1]+STdepths[2]]
+        # # ==============================================================
+        # # encoder
+        # res0 = (patches_resolution[0], patches_resolution[1]) # 112 112    
+        # dim0 = STembed_dim # 48
+        # self.enc0_block0 = STransformerBlock(
+        #     dim=dim0,
+        #     input_resolution=res0,
+        #     num_heads=num_heads[0],
+        #     window_size=window_size,
+        #     shift_size=0,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=dpr_s0[0],
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.enc0_block1 = STransformerBlock(
+        #     dim=dim0,
+        #     input_resolution=res0,
+        #     num_heads=num_heads[0],
+        #     window_size=window_size,
+        #     shift_size=window_size // 2,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=dpr_s0[1],
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.enc0_down = PatchMerging(
+        #     input_resolution=res0,
+        #     dim=dim0,
+        #     norm_layer=norm_layer,
+        # )
 
-        # =========================================================
-        res1 = (res0[0]//2, res0[1]//2)   # 56 56
-        dim1 = dim0 * 2 # 96
-        self.enc1_block0 = STransformerBlock(
-            dim=dim1,
-            input_resolution=res1,
-            num_heads=num_heads[1],
-            window_size=window_size,
-            shift_size=0,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=dpr_s1[0],
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.enc1_block1 = STransformerBlock(
-            dim=dim1,
-            input_resolution=res1,
-            num_heads=num_heads[1],
-            window_size=window_size,
-            shift_size=window_size // 2,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=dpr_s1[1],
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        # 28 28 192
-        self.enc1_down = PatchMerging(
-            input_resolution=res1,
-            dim=dim1,
-            norm_layer=norm_layer,
-        )
-        # =========================================================
-        res2 = (res1[0]//2, res1[1]//2)   # 28,28
-        dim2 = dim1 * 2 # 192
-        self.enc2_block0 = STransformerBlock(
-            dim=dim2,
-            input_resolution=res2,
-            num_heads=num_heads[2],
-            window_size=window_size,
-            shift_size=0,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=dpr_s2[0],
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.enc2_block1 = STransformerBlock(
-            dim=dim2,
-            input_resolution=res2,
-            num_heads=num_heads[2],
-            window_size=window_size,
-            shift_size=window_size // 2,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=dpr_s2[1],
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
+        # # =========================================================
+        # res1 = (res0[0]//2, res0[1]//2)   # 56 56
+        # dim1 = dim0 * 2 # 96
+        # self.enc1_block0 = STransformerBlock(
+        #     dim=dim1,
+        #     input_resolution=res1,
+        #     num_heads=num_heads[1],
+        #     window_size=window_size,
+        #     shift_size=0,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=dpr_s1[0],
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.enc1_block1 = STransformerBlock(
+        #     dim=dim1,
+        #     input_resolution=res1,
+        #     num_heads=num_heads[1],
+        #     window_size=window_size,
+        #     shift_size=window_size // 2,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=dpr_s1[1],
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # # 28 28 192
+        # self.enc1_down = PatchMerging(
+        #     input_resolution=res1,
+        #     dim=dim1,
+        #     norm_layer=norm_layer,
+        # )
+        # # =========================================================
+        # res2 = (res1[0]//2, res1[1]//2)   # 28,28
+        # dim2 = dim1 * 2 # 192
+        # self.enc2_block0 = STransformerBlock(
+        #     dim=dim2,
+        #     input_resolution=res2,
+        #     num_heads=num_heads[2],
+        #     window_size=window_size,
+        #     shift_size=0,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=dpr_s2[0],
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.enc2_block1 = STransformerBlock(
+        #     dim=dim2,
+        #     input_resolution=res2,
+        #     num_heads=num_heads[2],
+        #     window_size=window_size,
+        #     shift_size=window_size // 2,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=dpr_s2[1],
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
 
 
-        self.dec2_concat_linear = nn.Linear(dim2+dim2, dim2)
-        self.dec2_block0 = STransformerBlock(
-            dim=dim2,
-            input_resolution=res2,
-            num_heads=num_heads[2],
-            window_size=window_size,
-            shift_size=0,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.dec2_block1 = STransformerBlock(
-            dim=dim2,
-            input_resolution=res2,
-            num_heads=num_heads[2],
-            window_size=window_size,
-            shift_size=window_size // 2,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.dec2_up = PatchExpand(
-            input_resolution=res2,
-            dim=dim2,
-            dim_scale=2,
-            norm_layer=norm_layer,
-        )
+        # self.dec2_concat_linear = nn.Linear(dim2+dim2, dim2)
+        # self.dec2_block0 = STransformerBlock(
+        #     dim=dim2,
+        #     input_resolution=res2,
+        #     num_heads=num_heads[2],
+        #     window_size=window_size,
+        #     shift_size=0,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=drop_patch_rate,
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.dec2_block1 = STransformerBlock(
+        #     dim=dim2,
+        #     input_resolution=res2,
+        #     num_heads=num_heads[2],
+        #     window_size=window_size,
+        #     shift_size=window_size // 2,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=drop_patch_rate,
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.dec2_up = PatchExpand(
+        #     input_resolution=res2,
+        #     dim=dim2,
+        #     dim_scale=2,
+        #     norm_layer=norm_layer,
+        # )
 
-        # Stage 1: (56x56 96) + skip0(56x56 96)
-        self.dec1_concat_linear = nn.Linear(dim1+dim1, dim1)
-        self.dec1_block0 = STransformerBlock(
-            dim=dim1,
-            input_resolution=res1,
-            num_heads=num_heads[1],
-            window_size=window_size,
-            shift_size=0,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.dec1_block1 = STransformerBlock(
-            dim=dim1,
-            input_resolution=res1,
-            num_heads=num_heads[1],
-            window_size=window_size,
-            shift_size=window_size // 2,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.dec1_up = PatchExpand(
-            input_resolution=res1,
-            dim=dim1,
-            dim_scale=2,
-            norm_layer=norm_layer,
-        )
+        # # Stage 1: (56x56 96) + skip0(56x56 96)
+        # self.dec1_concat_linear = nn.Linear(dim1+dim1, dim1)
+        # self.dec1_block0 = STransformerBlock(
+        #     dim=dim1,
+        #     input_resolution=res1,
+        #     num_heads=num_heads[1],
+        #     window_size=window_size,
+        #     shift_size=0,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=drop_patch_rate,
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.dec1_block1 = STransformerBlock(
+        #     dim=dim1,
+        #     input_resolution=res1,
+        #     num_heads=num_heads[1],
+        #     window_size=window_size,
+        #     shift_size=window_size // 2,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=drop_patch_rate,
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.dec1_up = PatchExpand(
+        #     input_resolution=res1,
+        #     dim=dim1,
+        #     dim_scale=2,
+        #     norm_layer=norm_layer,
+        # )
 
-        # Stage 0: (112x112 48) + skip0(112x112 48)
-        self.dec0_concat_linear = nn.Linear(dim0+dim0, dim0)
-        self.dec0_block0 = STransformerBlock(
-            dim=dim0,
-            input_resolution=res0,
-            num_heads=num_heads[0],
-            window_size=window_size,
-            shift_size=0,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.dec0_block1 = STransformerBlock(
-            dim=dim0,
-            input_resolution=res0,
-            num_heads=num_heads[0],
-            window_size=window_size,
-            shift_size=window_size // 2,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            drop=drop_rate,
-            attn_drop=attn_drop_rate,
-            drop_path=drop_patch_rate,
-            act_layer=nn.GELU,
-            norm_layer=norm_layer,
-        )
-        self.norm_up = norm_layer(STembed_dim)
+        # # Stage 0: (112x112 48) + skip0(112x112 48)
+        # self.dec0_concat_linear = nn.Linear(dim0+dim0, dim0)
+        # self.dec0_block0 = STransformerBlock(
+        #     dim=dim0,
+        #     input_resolution=res0,
+        #     num_heads=num_heads[0],
+        #     window_size=window_size,
+        #     shift_size=0,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=drop_patch_rate,
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.dec0_block1 = STransformerBlock(
+        #     dim=dim0,
+        #     input_resolution=res0,
+        #     num_heads=num_heads[0],
+        #     window_size=window_size,
+        #     shift_size=window_size // 2,
+        #     mlp_ratio=mlp_ratio,
+        #     qkv_bias=qkv_bias,
+        #     qk_scale=qk_scale,
+        #     drop=drop_rate,
+        #     attn_drop=attn_drop_rate,
+        #     drop_path=drop_patch_rate,
+        #     act_layer=nn.GELU,
+        #     norm_layer=norm_layer,
+        # )
+        # self.norm_up = norm_layer(STembed_dim)
 
-        # Final 2x
-        if self.final_upsample == "expand_first":
-            self.up2 = FinalPatchExpand_X2(
-                input_resolution=(img_size // STpatch_size, img_size // STpatch_size),
-                dim=STembed_dim,
-                dim_scale=2,
-                norm_layer=norm_layer,
-            )
-            self.output = nn.Conv2d(
-                in_channels=STembed_dim,
-                out_channels=num_classes,
-                kernel_size=1,
-                bias=False,
-            )
+        # # Final 2x
+        # if self.final_upsample == "expand_first":
+        #     self.up2 = FinalPatchExpand_X2(
+        #         input_resolution=(img_size // STpatch_size, img_size // STpatch_size),
+        #         dim=STembed_dim,
+        #         dim_scale=2,
+        #         norm_layer=norm_layer,
+        #     )
+        #     self.output = nn.Conv2d(
+        #         in_channels=STembed_dim,
+        #         out_channels=num_classes,
+        #         kernel_size=1,
+        #         bias=False,
+        #     )
 
-        self.apply(self._init_weights)
+        # self.apply(self._init_weights)
 
-        # -----------------------end
+        # # -----------------------end
+        kan_input_dim = embed_dims[0]
+
+        # self.encoder1 = ConvLayer(3, kan_input_dim//8)  # 3-24
+        # self.encoder2 = ConvLayer(kan_input_dim//8, kan_input_dim//4)  # 24-48 
+        # self.encoder3 = ConvLayer(kan_input_dim//4, kan_input_dim)  # 48-192
+        self.encoder1 = ConvLayer(3, kan_input_dim//4)  # 3-48
+        self.encoder1_x1 = nn.Conv2d(3, kan_input_dim//4, kernel_size=1, bias=True)
+        self.encoder1_eca = eca_layer(channel=kan_input_dim//4)
+        self.encoder1_reseca = eca_layer(channel=kan_input_dim//4)
+
+        self.encoder2 = ConvLayer(kan_input_dim//4, kan_input_dim//2)  # 48-96 
+        self.encoder2_x1 = nn.Conv2d(kan_input_dim//4, kan_input_dim//2, kernel_size=1, bias=True)
+        self.encoder2_eca = eca_layer(channel=kan_input_dim//2)
+        self.encoder2_reseca = eca_layer(channel=kan_input_dim//2)
+        
+        self.encoder3 = ConvLayer(kan_input_dim//2, kan_input_dim)  # 96-192
+        self.encoder3_x1 = nn.Conv2d(kan_input_dim//2, kan_input_dim, kernel_size=1, bias=True)
+        self.encoder3_eca = eca_layer(channel=kan_input_dim//2)
+        self.encoder3_reseca = eca_layer(channel=kan_input_dim//2)
+        
+        self.norm2 = norm_layer(embed_dims[0]) # 192
+
         self.norm3 = norm_layer(embed_dims[1]) # 384
+        self.tobottleneck_eca = eca_layer(channel=embed_dims[1])
+
         self.norm4 = norm_layer(embed_dims[2]) # 768
+        self.bottleneck_eca = eca_layer(channel=embed_dims[2])
         self.norm4_b = norm_layer(embed_dims[2]) # 768
+        # self.dwsc1 = DWSConv(in_features=kan_input_dim//4, hidden_features=kan_input_dim//2, act_layer=nn.ReLU)
+        # self.dwsc2 = DWSConv(in_features=kan_input_dim//2, hidden_features=kan_input_dim, act_layer=nn.ReLU)
+        # self.dwsc3 = DWSConv(in_features=kan_input_dim, hidden_features=kan_input_dim*2, act_layer=nn.ReLU)
+        # self.dwsc4 = DWSConv(in_features=kan_input_dim*2, hidden_features=kan_input_dim*4, act_layer=nn.ReLU)
 
         self.dnorm3 = norm_layer(embed_dims[1]) # 384
         self.dnorm4 = norm_layer(embed_dims[0]) # 192
 
         dpr = [x.item() for x in torch.linspace(0, drop_patch_rate, sum(depths))]
 
+        self.block0 = nn.ModuleList(
+            [
+                KANBlock(
+                    dim=embed_dims[0],
+                    drop=drop_rate,
+                    drop_path=dpr[0],
+                    norm_layer=norm_layer
+                )
+            ]
+        )
         self.block1 = nn.ModuleList(
             [
                 KANBlock(
@@ -1077,7 +1144,7 @@ class MY_Unet(nn.Module):
                 )
             ]
         )
-        self.dblock2 = nn.ModuleList(
+        self.dblock0 = nn.ModuleList(
             [
                 KANBlock(
                     dim=embed_dims[0],
@@ -1091,7 +1158,28 @@ class MY_Unet(nn.Module):
         self.patch_embed4 = PatchEmbed(img_size=img_size // 8, patch_size=3, stride=2, in_chans=embed_dims[1], embed_dim=embed_dims[2])
 
         self.decoder1 = D_ConvLayer(embed_dims[2], embed_dims[1]) # 768 => 384
+        self.decoder1_concat_linear = nn.Linear(embed_dims[1]+embed_dims[1], embed_dims[1])
+
         self.decoder2 = D_ConvLayer(embed_dims[1], embed_dims[0]) # 384 => 192
+        self.decoder2_eca = eca_layer(channel=embed_dims[1])
+        self.decoder2_x1 = nn.Conv2d(embed_dims[1], embed_dims[0], kernel_size=1, bias=True)
+        self.decoder2_concat_linear = nn.Linear(embed_dims[0]+embed_dims[0], embed_dims[0])
+
+        self.decoder3 = D_ConvLayer(embed_dims[0], embed_dims[0]//2) # 192 => 96
+        self.decoder3_eca = eca_layer(channel=embed_dims[0])
+        self.decoder3_x1 = nn.Conv2d(embed_dims[0], embed_dims[0]//2, kernel_size=1, bias=True)
+        self.decoder3_concat_linear = nn.Linear(embed_dims[0]//2+embed_dims[0]//2, embed_dims[0]//2)
+
+        self.decoder4 = D_ConvLayer(embed_dims[0]//2, embed_dims[0]//4) # 96 => 48
+        self.decoder4_eca = eca_layer(channel=embed_dims[0]//2)
+        self.decoder4_x1 = nn.Conv2d(embed_dims[0]//2, embed_dims[0]//4, kernel_size=1, bias=True)
+        self.decoder4_concat_linear = nn.Linear(embed_dims[0]//4+embed_dims[0]//4, embed_dims[0]//4)
+
+        self.decoder5 = D_ConvLayer(embed_dims[0]//4, embed_dims[0]//4) # 96 => 96
+        self.decoder5_eca = eca_layer(channel=embed_dims[0]//4)
+
+        self.final = nn.Conv2d(embed_dims[0]//4, num_classes, kernel_size=1)
+        self.soft = nn.Softmax(dim=1)
     
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -1231,9 +1319,155 @@ class MY_Unet(nn.Module):
             x = self.output(x)
         return x
 
+
+    def dual_branch(self, x):
+        
+        B = x.shape[0]
+        ### Encoder
+        ### Conv Stage
+
+        ### Stage 1  3 224 224 -> 48 112 112
+        out = F.relu(F.max_pool2d(self.encoder1(x), 2, 2))
+        out_x1 = self.encoder1_eca(F.relu(F.max_pool2d(self.encoder1_x1(x), 2, 2)))
+        # out_x1 = F.relu(F.max_pool2d(self.encoder1_x1(x), 2, 2))
+        x = torch.add(out, out_x1)
+        # t1 = self.dwsc1(out)
+        # t1 = x
+        t1 = self.encoder1_reseca(x)
+
+        ### Stage 2 48 112 112 -> 96 56 56
+        out = F.relu(F.max_pool2d(self.encoder2(x), 2, 2))
+        out_x1 = self.encoder2_eca(F.relu(F.max_pool2d(self.encoder2_x1(x), 2, 2)))
+        # out_x1 = F.relu(F.max_pool2d(self.encoder2_x1(x), 2, 2))
+        x = torch.add(out, out_x1)
+        #t2 = self.dwsc2(out)
+        t2 = self.encoder2_reseca(x)
+
+
+        ### Stage 3 96 56 56 -> 192 28 28
+        out = F.relu(F.max_pool2d(self.encoder3(x), 2, 2))
+        out_x1 = self.encoder3_eca(F.relu(F.max_pool2d(self.encoder3_x1(x), 2, 2)))
+        # out_x1 = F.relu(F.max_pool2d(self.encoder3_x1(x), 2, 2))
+        x = torch.add(out, out_x1)
+        #t3 = self.dwsc3(out)
+        t3 = self.encoder3_reseca(x)
+
+        _, _, H, W = x.shape
+        # 28*28 192
+        x = x.flatten(2).transpose(1,2)
+        for i, blk in enumerate(self.block0):
+            x = blk(x, H, W)
+        x = self.norm2(x)
+        # 192 28 28
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
+        ### Tokenized KAN Stage
+        ### Stage 4
+        # 192 28 28 -> 14*14 384
+        x, H, W = self.patch_embed3(x)
+        for i, blk in enumerate(self.block1):
+            x = blk(x, H, W)
+        x = self.norm3(x)
+        # 384 14 14
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        # t4 = self.dwsc4(out)
+        # t4 = x
+        t4 = self.tobottleneck_eca(x)
+
+        ### Bottleneck
+        # 384 14 14 -> 7*7 768
+        x, H, W = self.patch_embed4(x)
+        for i, blk in enumerate(self.block2):
+            x = blk(x, H, W)
+        x = self.norm4(x)
+        # (B, 768, 7, 7)
+        skip0 = self.bottleneck_eca(x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous())
+        for i, blk in enumerate(self.block2_b):
+            x = blk(x, H, W)
+        x = self.norm4_b(x)
+        # (B, 768, 7, 7)
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        x = torch.add(x, skip0)
+
+        ### Stage 4 768 7 7 -> 384 14 14
+        x = F.relu(F.interpolate(self.decoder1(x), scale_factor=(2,2), mode ='bilinear'))
+        
+        x = torch.add(x, t4)
+        # 14*14 384
+        # _, _, H, W = x.shape
+        # x = x.flatten(2).transpose(1, 2)
+        # x = torch.cat([x, t4], dim=-1)
+        # x = self.decoder1_concat_linear(x)
+        # x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        
+        _, _, H, W = x.shape
+        # 14*14 384
+        x = x.flatten(2).transpose(1,2)
+        for i, blk in enumerate(self.dblock1):
+            x = blk(x, H, W)
+        x = self.dnorm3(x)
+        # 14*14 384 -> 384 14 14
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
+        # 384 14 14 -> 192 28 28
+        out = F.relu(F.interpolate(self.decoder2(x),scale_factor=(2,2),mode ='bilinear'))
+        out_x1 = F.relu(F.interpolate(self.decoder2_x1(self.decoder2_eca(x)),scale_factor=(2,2),mode ='bilinear'))
+        # out_x1 = F.relu(F.interpolate(self.decoder2_x1(x),scale_factor=(2,2),mode ='bilinear'))
+        x = torch.add(out, out_x1)
+        x = torch.add(x, t3)
+        # _, _, H, W = x.shape
+        # x = x.flatten(2).transpose(1, 2)
+        # x = torch.cat([x, t3], dim=-1)
+        # x = self.decoder2_concat_linear(x)
+        # x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
+
+        # redundant kan block
+        _,_,H,W = x.shape
+        # 192 28 28 -> 28*28 192
+        x = x.flatten(2).transpose(1,2)
+        for i, blk in enumerate(self.dblock0):
+            x = blk(x, H, W)
+        x = self.dnorm4(x)
+        # 28*28 192 -> 192 28 28
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
+        # 192 28 28 -> 96 56 56
+        out = F.relu(F.interpolate(self.decoder3(x),scale_factor=(2,2),mode ='bilinear'))
+        out_x1 = F.relu(F.interpolate(self.decoder3_x1(self.decoder3_eca(x)),scale_factor=(2,2),mode ='bilinear'))
+        # out_x1 = F.relu(F.interpolate(self.decoder3_x1(x),scale_factor=(2,2),mode ='bilinear'))
+        x = torch.add(out, out_x1)
+        x = torch.add(x, t2)
+        # _, _, H, W = x.shape
+        # x = x.flatten(2).transpose(1, 2)
+        # x = torch.cat([x, t2], dim=-1)
+        # x = self.decoder3_concat_linear(x)
+        # x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
+        # 96 56 56 -> 48 112 112
+        out = F.relu(F.interpolate(self.decoder4(x),scale_factor=(2,2),mode ='bilinear'))
+        out_x1 = F.relu(F.interpolate(self.decoder4_x1(self.decoder4_eca(x)),scale_factor=(2,2),mode ='bilinear'))
+        # out_x1 = F.relu(F.interpolate(self.decoder4_x1(x),scale_factor=(2,2),mode ='bilinear'))
+        x = torch.add(out, out_x1)
+        x = torch.add(x, t1)
+        # _, _, H, W = x.shape
+        # x = x.flatten(2).transpose(1, 2)
+        # x = torch.cat([x, t1], dim=-1)
+        # x = self.decoder4_concat_linear(x)
+        # x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
+        # 48 112 112 -> 48 224 224
+        x = F.relu(F.interpolate(self.decoder5(self.decoder5_eca(x)),scale_factor=(2,2),mode ='bilinear'))
+        # x = F.relu(F.interpolate(self.decoder5(x),scale_factor=(2,2),mode ='bilinear'))
+
+        return self.final(x)
+
     def forward(self, x):
-        x, skips = self.forward_features(x)
-        x = self.forward_bottleneck(x)
-        x = self.forward_up_features(x, skips)
-        x = self.final_x2(x)
+        # x, skips = self.forward_features(x)
+        # x = self.forward_bottleneck(x)
+        # x = self.forward_up_features(x, skips)
+        # x = self.final_x2(x)
+
+
+        x = self.dual_branch(x)
         return x

@@ -53,7 +53,7 @@ def parse_args():
     )
     parser.add_argument(
         '--epochs', 
-        default=600,
+        default=300,
         type=int,
         metavar='N',
         help='number of total epochs to run'
@@ -68,7 +68,7 @@ def parse_args():
     )
     parser.add_argument(
         '--dataseed',
-        default=312,
+        default=2981,
         type=int,
         help=''
     )
@@ -428,20 +428,21 @@ def load_swin_transformer_weights(model: torch.nn.Module, checkpoint_path: str):
     return model
 
 
-def seed_torch(seed=99):
+def seed_torch(seed=42):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True # select a best algorithm
-    torch.backends.cudnn.deterministic = False # use deterministic algorithms
+    torch.backends.cudnn.benchmark = False # select a best algorithm
+    torch.backends.cudnn.deterministic = True # use deterministic algorithms
 
 def main():
-    seed_torch()
+    
     config = vars(parse_args())
-
+    seed_torch(seed=config['dataseed'])
+    #seed_torch(seed=2981)
     exp_name = config.get('name')
     output_dir = config.get('output_dir')
 
@@ -476,7 +477,7 @@ def main():
     else:
         criterion = losses.__dict__[config['loss']]().cuda()
 
-    torch.backends.cudnn.benchmark = True
+    #torch.backends.cudnn.benchmark = True
 
     # create model
     model = archs.__dict__[config['arch']](
@@ -571,15 +572,15 @@ def main():
     img_ids = sorted(glob(os.path.join(config['data_dir'], config['dataset'], 'images', '*' + img_ext)))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
     # dataseed
-    train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2)
+    train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2, random_state=config['dataseed'])
 
     train_transform = Compose([
         albu.RandomRotate90(),
         albu.HorizontalFlip(),
         #albu.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        albu.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.05, rotate_limit=30, p=0.2),
+        #albu.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.05, rotate_limit=30, p=0.2),
         #albu.Affine(translate_percent=(-0.0625, 0.0625), scale=(0.9, 1.1), rotate=(-45, 45), p=0.3),
-        albu.ElasticTransform(p=0.2),
+        #albu.ElasticTransform(p=0.2),
         albu.Resize(config['input_h'], config['input_w']),
         albu.Normalize(),
     ])
